@@ -15,13 +15,15 @@ import {
   Share2,
   Music,
   Clock,
+  Zap,
+  BadgeCheck,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { motion } from 'framer-motion'
 import type { Asset } from '@/lib/types'
 import { useStockStore } from '@/lib/store'
-import { faviconUrl, prettyHost } from '@/lib/classify'
+import { faviconUrl, prettyHost, suggestFilename } from '@/lib/classify'
 import { cn } from '@/lib/utils'
 
 interface SavedRow {
@@ -122,6 +124,21 @@ function useSaveActions() {
 function useDownload() {
   return useMutation({
     mutationFn: async (asset: Asset) => {
+      // Direct-downloadable assets: stream through the StockNova proxy and
+      // skip the logging POST (the proxy already logs a DownloadLog row).
+      if (asset.directDownload) {
+        const params = new URLSearchParams({
+          url: asset.url,
+          filename: suggestFilename(asset),
+          assetId: asset.assetId,
+          title: asset.title,
+          type: asset.kind,
+          source: asset.source,
+        })
+        return { proxy: true, href: `/api/proxy-download?${params.toString()}` }
+      }
+      // Non-direct (YouTube pages, social posts, etc.): log via /api/download
+      // then open the source page in a new tab.
       const r = await fetch('/api/download', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -136,9 +153,15 @@ function useDownload() {
       if (!r.ok) throw new Error('Failed to log download')
       return r.json()
     },
-    onSuccess: (_d, asset) => {
-      // Open in new tab to trigger download / view
-      window.open(asset.url, '_blank', 'noopener,noreferrer')
+    onSuccess: (d, asset) => {
+      if (d && typeof d === 'object' && 'proxy' in d && d.proxy) {
+        // Trigger a direct attachment download — no redirect to source.
+        window.location.href = (d as { href: string }).href
+        toast.success('Downloading directly from StockNova…')
+      } else {
+        window.open(asset.url, '_blank', 'noopener,noreferrer')
+        toast.success('Opening source…')
+      }
     },
     onError: () => toast.error('Could not start download.'),
   })
@@ -187,7 +210,7 @@ export function AssetCard({ asset, index = 0 }: CardProps) {
       className="sn-glass sn-glow group relative cursor-pointer overflow-hidden rounded-2xl"
       role="button"
       tabIndex={0}
-      aria-label={`${asset.title} — open details`}
+      aria-label={`${asset.title} — ${asset.kind} — open details${asset.free ? ' — free / royalty-free' : ''}${asset.directDownload ? ' — direct download available' : ''}`}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
@@ -201,7 +224,11 @@ export function AssetCard({ asset, index = 0 }: CardProps) {
           <h3 className="line-clamp-2 text-sm font-medium text-zinc-100">
             {asset.title}
           </h3>
-          <KindBadge kind={asset.kind} />
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+            {asset.free && <FreeBadge />}
+            {asset.directDownload && <DirectBadge />}
+            <KindBadge kind={asset.kind} />
+          </div>
         </div>
         <div className="mt-2 flex items-center justify-between gap-2">
           <span className="truncate text-xs text-zinc-400">
@@ -278,6 +305,32 @@ function KindBadge({ kind }: { kind: Asset['kind'] }) {
       )}
     >
       {m.label}
+    </span>
+  )
+}
+
+function FreeBadge() {
+  return (
+    <span
+      title="Free / royalty-free source"
+      aria-label="Free / royalty-free source"
+      className="inline-flex shrink-0 items-center gap-0.5 rounded bg-emerald-500/20 px-1.5 py-0.5 text-[10px] font-bold text-emerald-300 ring-1 ring-emerald-400/30"
+    >
+      <BadgeCheck className="size-2.5" />
+      FREE
+    </span>
+  )
+}
+
+function DirectBadge() {
+  return (
+    <span
+      title="Direct download available — no redirect"
+      aria-label="Direct download available"
+      className="inline-flex shrink-0 items-center gap-0.5 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-bold text-amber-300 ring-1 ring-amber-400/30"
+    >
+      <Zap className="size-2.5" />
+      DL
     </span>
   )
 }

@@ -15,6 +15,9 @@ export interface Asset {
   source: string
   host?: string
   snippet?: string
+  free?: boolean // true if from a known free / royalty-free source
+  license?: string // e.g. 'CC0', 'Pixabay License', 'Pexels License', ''
+  directDownload?: boolean // true if the URL is a direct file (proxy-downloadable)
   meta?: Record<string, unknown>
 }
 

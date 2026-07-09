@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { SlidersHorizontal, X } from 'lucide-react'
+import { SlidersHorizontal, X, Check } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Sheet,
@@ -81,14 +81,25 @@ function FilterRailContent({ onPick }: { onPick?: () => void }) {
   const sort = useStockStore((s) => s.sort)
   const setSort = useStockStore((s) => s.setSort)
   const results = useStockStore((s) => s.results)
+  const filterFree = useStockStore((s) => s.filterFree)
+  const setFilterFree = useStockStore((s) => s.setFilterFree)
+  const filterDirect = useStockStore((s) => s.filterDirect)
+  const setFilterDirect = useStockStore((s) => s.setFilterDirect)
 
+  // counts reflect the active client-side filters (free/direct) so the format
+  // pills tell the truth about what the user is currently seeing.
   const counts = React.useMemo(() => {
-    const c: Record<string, number> = { all: results.length }
-    for (const r of results) {
+    const base = results.filter((r) => {
+      if (filterFree && !r.free) return false
+      if (filterDirect && !r.directDownload) return false
+      return true
+    })
+    const c: Record<string, number> = { all: base.length }
+    for (const r of base) {
       c[r.kind] = (c[r.kind] ?? 0) + 1
     }
     return c
-  }, [results])
+  }, [results, filterFree, filterDirect])
 
   return (
     <div className="space-y-5">
@@ -135,6 +146,32 @@ function FilterRailContent({ onPick }: { onPick?: () => void }) {
 
       <div>
         <p className="mb-2 text-xs font-medium uppercase tracking-wider text-zinc-400">
+          License
+        </p>
+        <div className="space-y-1">
+          <ToggleRow
+            label="Free / Royalty-free"
+            active={filterFree}
+            onClick={() => {
+              setFilterFree(!filterFree)
+              onPick?.()
+            }}
+            tone="emerald"
+          />
+          <ToggleRow
+            label="Direct download"
+            active={filterDirect}
+            onClick={() => {
+              setFilterDirect(!filterDirect)
+              onPick?.()
+            }}
+            tone="amber"
+          />
+        </div>
+      </div>
+
+      <div>
+        <p className="mb-2 text-xs font-medium uppercase tracking-wider text-zinc-400">
           Sort by
         </p>
         <div className="space-y-1">
@@ -163,13 +200,18 @@ function FilterRailContent({ onPick }: { onPick?: () => void }) {
         </div>
       </div>
 
-      {(filterKind !== 'all' || sort !== 'relevance') && (
+      {(filterKind !== 'all' ||
+        sort !== 'relevance' ||
+        filterFree ||
+        filterDirect) && (
         <Button
           variant="ghost"
           size="sm"
           onClick={() => {
             setFilterKind('all')
             setSort('relevance')
+            setFilterFree(false)
+            setFilterDirect(false)
           }}
           className="w-full justify-center text-zinc-400 hover:bg-white/5 hover:text-zinc-200"
         >
@@ -178,5 +220,47 @@ function FilterRailContent({ onPick }: { onPick?: () => void }) {
         </Button>
       )}
     </div>
+  )
+}
+
+function ToggleRow({
+  label,
+  active,
+  onClick,
+  tone,
+}: {
+  label: string
+  active: boolean
+  onClick: () => void
+  tone: 'emerald' | 'amber'
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(
+        'flex w-full items-center justify-between rounded-lg px-3 py-1.5 text-sm transition-all',
+        active
+          ? tone === 'emerald'
+            ? 'bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-400/30'
+            : 'bg-amber-400/15 text-amber-300 ring-1 ring-amber-400/30'
+          : 'text-zinc-300 hover:bg-white/5',
+      )}
+    >
+      <span>{label}</span>
+      <span
+        className={cn(
+          'inline-flex size-4 items-center justify-center rounded-full border',
+          active
+            ? tone === 'emerald'
+              ? 'border-emerald-400 bg-emerald-400 text-emerald-950'
+              : 'border-amber-400 bg-amber-400 text-amber-950'
+            : 'border-white/20 text-transparent',
+        )}
+      >
+        <Check className="size-3" />
+      </span>
+    </button>
   )
 }

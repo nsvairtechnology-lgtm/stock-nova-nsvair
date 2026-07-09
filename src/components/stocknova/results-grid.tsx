@@ -33,6 +33,8 @@ export function ResultsGrid() {
   const loading = useStockStore((s) => s.loading)
   const results = useStockStore((s) => s.results)
   const filterKind = useStockStore((s) => s.filterKind)
+  const filterFree = useStockStore((s) => s.filterFree)
+  const filterDirect = useStockStore((s) => s.filterDirect)
   const sort = useStockStore((s) => s.sort)
   const lastQuery = useStockStore((s) => s.lastQuery)
   const lastMs = useStockStore((s) => s.lastMs)
@@ -40,12 +42,14 @@ export function ResultsGrid() {
   const error = useStockStore((s) => s.error)
 
   const filtered = React.useMemo(() => {
-    const base =
-      filterKind === 'all'
-        ? results
-        : results.filter((r) => r.kind === filterKind)
+    const base = results.filter((r) => {
+      if (filterFree && !r.free) return false
+      if (filterDirect && !r.directDownload) return false
+      if (filterKind !== 'all' && r.kind !== filterKind) return false
+      return true
+    })
     return sortResults(base, sort)
-  }, [results, filterKind, sort])
+  }, [results, filterKind, filterFree, filterDirect, sort])
 
   if (!hasSearched && !loading) {
     return null
@@ -148,7 +152,7 @@ export function ResultsGrid() {
               </motion.div>
             ) : (
               <motion.div
-                key={`grid-${filterKind}-${sort}-${lastQuery}`}
+                key={`grid-${filterKind}-${filterFree}-${filterDirect}-${sort}-${lastQuery}`}
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}

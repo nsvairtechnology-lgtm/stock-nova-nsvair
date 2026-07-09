@@ -95,3 +95,85 @@ Work Log:
 
 Stage Summary:
 - StockNova is browser-verified and fully functional. Real multi-format search (image-search CLI + web-search SDK), persistent saved library, download logging, live stats, dark-first glassmorphism UI, sticky footer, responsive, accessible, no indigo/blue. Ready for the user.
+
+---
+Task ID: 1-4
+Agent: full-stack-developer
+Task: StockNova upgrade — tripled+ result counts via multi-query fan-out, added a Royalty-free toggle that biases toward free-stock sources (Pexels/Pixabay/Unsplash/Coverr/Mixkit/Bensound/Freesound/Wikimedia/Flickr…), and built a server-side download proxy so users can download any direct-file asset straight from StockNova without being redirected to the source site.
+
+Work Log:
+- Read the previous worklog (Task 0, 2-3, 5) to understand the existing portal (single-query search returning ~18 results, dark emerald/amber UI, sticky footer). Confirmed dev server running on :3000 and did NOT restart it.
+- Extended `src/lib/types.ts`: added `free?: boolean`, `license?: string`, `directDownload?: boolean` to the `Asset` interface as top-level fields (alongside meta).
+- Extended `src/lib/classify.ts`: added `FREE_SOURCES` set (Unsplash, Pexels, Pixabay, Coverr, Mixkit, Bensound, Freesound, FMA, archive.org, Wikimedia Commons, Openverse, StockSnap, LifeOfPix, Gratisography, Morguefile, SplitShire, Kaboompics, PublicDomainPictures, NewOldStock, Libreshot, Rawpixel, Flickr, Incompetech, ccMixter, Musopen), `isFreeSource(url)`, `licenseForHost(url)` (returns human-readable license strings like "Unsplash License (free)", "Pixabay License (free)", "CC0 / Public Domain", "Creative Commons (varies)"…), `isDirectDownloadable(url, kind?)` (matches direct file extensions + known CDN/OSS hosts like sfile.chatglm.cn, images.unsplash.com, cdn.pixabay.com, upload.wikimedia.org…), and `suggestFilename(asset)` (derives a Content-Disposition-safe filename from title + URL + kind).
+- Extended `src/lib/store.ts`: added `freeOnly`, `directOnly`, `filterFree`, `filterDirect` state + setters; `runSearch` now sends `limit=60` (up from 24) and `&free=${freeOnly ? '1' : '0'}`; `reset()` clears the new flags.
+- Overhauled `src/app/api/search/route.ts`:
+  - Cap raised from 60 → 120, default 60.
+  - Replaced single `buildQuery` with `buildQueries(query, type, free): QueryPlan[]` returning multiple query angles per type:
+    - **all** (free=0): image-search(q) + web(q) + web(`${q} free download`) + web(`${q} stock`) + web(`${q} hd 4k high quality`) + web(`${q} wallpaper background`)
+    - **all** (free=1): image-search(`${q} free royalty free`) + web(`${q} free royalty free copyright free`) + web(`${q} site:unsplash.com OR site:pexels.com OR site:pixabay.com`) + web(`${q} public domain creative commons`) + web(`${q} free stock download`) + web(`${q} site:commons.wikimedia.org OR site:flickr.com`)
+    - **image**: image-search(q or `${q} free`) + web(`${q} free stock photo site:unsplash.com OR site:pexels.com OR site:pixabay.com OR site:stocksnap.io`)
+    - **video** (free=0): web(`${q} site:youtube.com`) + web(`${q} free stock video site:pexels.com OR site:pixabay.com OR site:coverr.co OR site:mixkit.co`) + web(`${q} royalty free video download`)
+    - **video** (free=1): drops YouTube-only, adds web(`${q} free copyright free video`)
+    - **audio**: web(`${q} free music site:pixabay.com OR site:freesound.org OR site:freemusicarchive.org OR site:bensound.com`) + web(`${q} royalty free audio download`) + web(`${q} free sound effect`)
+    - **pdf**: web(`${q} filetype:pdf`) + web(`${q} research paper pdf`) + web(`${q} free ebook pdf`)
+    - **doc**: web(`${q} filetype:doc OR filetype:ppt OR filetype:docx OR filetype:pptx`) + web(`${q} template slides free download`)
+    - **social**: web(`${q} site:twitter.com OR site:x.com OR site:reddit.com`) + web(`${q} site:pinterest.com OR site:instagram.com OR site:tiktok.com`)
+    - **web**: web(q) + web(`${q} article blog guide`) + web(`${q} news`)
+  - Image-search runs in parallel with a serial web-search chain (1.2s inter-call delay) to stay under the upstream ZAI web_search rate limit (429s). Each web_search retries up to 2× on 429 with exponential backoff (800ms, 1600ms).
+  - Single shared `ZAI.create()` instance reused across all calls.
+  - Each result is enriched with `free = isFreeSource(url)`, `license = licenseForHost(url)`, `directDownload = isDirectDownloadable(url, kind)`.
+  - Removed the post-query kind filter — many free-stock video/audio hosts (Pexels, Pixabay, Mixkit, Bensound) are not in classifyKind's VIDEO_HOSTS/AUDIO_HOSTS and were being dropped. The query plan already targets the right kind; the format filter rail can narrow further if needed.
+  - When `free=1`, results are sorted with `(free?2:0) + (directDownload?1:0)` so free + downloadable items float to the top.
+  - Persisted SearchHistory + TrendingKeyword upsert + ms timing retained.
+- Created `src/app/api/proxy-download/route.ts` (NEW): GET endpoint that fetches the upstream file server-side and streams `upstream.body` straight back into a NextResponse with `Content-Disposition: attachment; filename="..."`. Sets `X-StockNova-Proxy: 1`, `Cache-Control: no-store`, preserves Content-Type + Content-Length. Falls back to a 302 redirect to the original URL if: (a) upstream returns non-OK / no body, (b) upstream returned HTML (login/landing page instead of the file), or (c) fetch throws. Logs a DownloadLog row best-effort. 90s upstream timeout via AbortSignal.timeout.
+- Updated `src/components/stocknova/hero-search.tsx`: added a prominent emerald "Royalty-free / Copyright-free" Switch row BELOW the search input and ABOVE the format chips, with BadgeCheck icon + emerald glow when active. Toggling calls `setFreeOnly(checked)` then re-runs search. Updated placeholder to mention "free" and added a tip line "Tip: toggle Royalty-free for copyright-free results you can download directly."
+- Updated `src/components/stocknova/filter-rail.tsx`: added a new "License" section with two ToggleRow entries — "Free / Royalty-free" (toggles `filterFree`) and "Direct download" (toggles `filterDirect`). Per-kind counts now reflect the active client-side filters (free/direct). Reset button also clears these.
+- Updated `src/components/stocknova/results-grid.tsx`: filter logic now AND-combines `filterKind`, `filterFree`, `filterDirect`. AnimatePresence key includes the new filters so the grid re-animates on filter change.
+- Updated `src/components/stocknova/asset-card.tsx`:
+  - Added `FreeBadge` (emerald pill with BadgeCheck icon, "FREE") and `DirectBadge` (amber pill with Zap icon, "DL") shown next to KindBadge when `asset.free` / `asset.directDownload`.
+  - `useDownload` mutation: if `asset.directDownload`, builds a `/api/proxy-download?...` URL with `suggestFilename(asset)` and sets `window.location.href` to it (direct attachment download, no redirect); otherwise logs via `/api/download` then opens source. Toast messages reflect the path taken.
+  - Card `aria-label` includes free/direct-download hints.
+- Updated `src/components/stocknova/asset-detail-dialog.tsx`: added Meta rows for License / Free / Direct download when present. Download button uses the same proxy-or-open-source logic as the card. Helper text under the button row in emerald: "Downloads directly from StockNova — no redirect to the source site." when `directDownload` is true.
+- Updated `src/components/stocknova/saved-drawer-list.tsx`: download button per saved row derives `directDownload` at render time via `isDirectDownloadable(a.url, a.type)` (saved rows don't carry the field — DB stores meta as JSON string). Direct-downloadable saved items stream through the proxy; others fall back to /api/download log + open source.
+- Ran `bun run lint` → clean (0 errors).
+- Live API verification (curl):
+  - `/api/search?q=mountain+landscape&type=all&limit=60&free=0` → **count=59** (was 18 before, ~3.3× more), 20 images + 31 web + 7 social + 1 video, 10 free, 20 direct-downloadable. ~16s.
+  - `/api/search?q=cat&type=all&limit=60&free=1` → **count=56**, 25 free, 24 direct-downloadable. Licenses assigned: Wikimedia CC, Unsplash License, Flickr CC, Pixabay License, CC0. Hosts: sfile.chatglm.cn (OSS images), commons.wikimedia.org, unsplash.com, flickr.com, pixabay.com, pexels.com, gratisography.com, stocksnap.io, rawpixel.com — all free sources. ~19s.
+  - `/api/search?q=drone+footage&type=video&limit=60&free=1` → **count=19** (was 2-3 before), 12 free, hosts include pixabay.com (5), mixkit.co (3), pexels.com (2), coverr.co (2) — exactly the free stock-video sources requested. ~14s.
+  - `/api/search?q=lofi+music&type=audio&limit=60&free=1` → **count=23**, 11 free, hosts include pixabay.com (5), freemusicarchive.org (4), bensound.com (2) — free music sources. ~15s.
+  - `/api/search?q=cybersecurity+report&type=pdf&limit=60&free=0` → **count=26** (was 6 before, ~4.3× more), 18 direct-downloadable PDF URLs. ~6s.
+  - `/api/proxy-download?url=https%3A%2F%2Fimages.unsplash.com%2Fphoto-1506744038136-46273834b3fb%3Fw%3D800&filename=test.jpg` → HTTP 200, `Content-Disposition: attachment; filename="test.jpg"`, `Content-Type: image/jpeg`, `Content-Length: 83118`, `X-StockNova-Proxy: 1`. Confirmed: file streams directly from StockNova, no redirect.
+- Verified homepage (`/`) renders cleanly with the new royalty-free toggle ("Royalty-free / Copyright-free" label + Switch + tip line present in SSR HTML, 66 KB page).
+
+Stage Summary:
+- Files edited: src/lib/types.ts, src/lib/classify.ts, src/lib/store.ts, src/app/api/search/route.ts, src/components/stocknova/hero-search.tsx, src/components/stocknova/filter-rail.tsx, src/components/stocknova/results-grid.tsx, src/components/stocknova/asset-card.tsx, src/components/stocknova/asset-detail-dialog.tsx, src/components/stocknova/saved-drawer-list.tsx.
+- Files created: src/app/api/proxy-download/route.ts.
+- Result-count improvement (free=0): mountain landscape all 18 → **59** (3.3×); cybersecurity pdf 6 → **26** (4.3×). With free=1: cat all → **56** (25 free, 24 direct-DL); drone footage video → **19** (12 free, Pexels/Pixabay/Mixkit/Coverr hosts); lofi audio → **23** (11 free, Pixabay/FMA/Bensound hosts).
+- Royalty-free toggle: server-side `free=1` flag triggers free-angled query plans (site: filters for known free-stock hosts, public-domain / CC / royalty-free query angles); each result carries `free` boolean (from `isFreeSource`), `license` string (from `licenseForHost`), and `directDownload` boolean (from `isDirectDownloadable`). FREE + DL badges on cards, License/Free/Direct meta in detail dialog, Free/Direct filter toggles in the rail.
+- Direct download: `/api/proxy-download?url=…&filename=…&assetId=…&title=…&type=…&source=…` streams upstream file bytes back as `Content-Disposition: attachment` (no redirect). Falls back to 302 redirect on any error or HTML upstream. All direct-downloadable assets (OSS image URLs, .pdf/.mp4/.mp3/.jpg/.png/.webp/.wav/.doc/.ppt, known CDN hosts) download through the proxy from the asset card, detail dialog, and saved-drawer list.
+- Limitations: ZAI's web_search API caps at 10 results per call regardless of `num`, so reaching the 60-120 "all" target required adding extra query angles (hd, wallpaper, wikimedia). Search latency is now 5-19s depending on type (was 2-3s) because of serial web calls + 429 retries — this is the trade-off for 3-4× more results. Image-search adds up to 90s timeout but normally completes in <25s. The 429 rate limit on the upstream ZAI API is mitigated by sequential calls + 1.2s inter-call delay + exponential-backoff retries, but a small percentage of calls still fail (returned []) — this is handled gracefully, the search never crashes.
+- No indigo/blue colors introduced. Sticky footer layout untouched. z-ai-web-dev-sdk used server-side only (never imported in client components). All fetches use relative paths only. Prisma schema + db.ts untouched. Lint clean.
+
+---
+Task ID: 5
+Agent: orchestrator (main) — Agent Browser verification (round 2)
+Task: End-to-end verification of the StockNova upgrade: more results + royalty-free filter + direct download proxy.
+
+Work Log:
+- Opened http://localhost:3000/ — page rendered with new "Royalty-free / Copyright-free" Switch (ref=e52) in hero. No console/page errors.
+- Searched "mountain landscape" (free=0): result count jumped from 18 (before upgrade) to **57** (All 57 = Images 20, Videos 1, Social 7, Web 29) — 3.2x more results, confirming multi-query fan-out works.
+- Filter rail now has a LICENSE section with "Free / Royalty-free" + "Direct download" toggle buttons.
+- Clicked "Free / Royalty-free" client filter → results filtered 57 → 11 (only free-tagged assets). Confirmed filter logic works.
+- Toggled the "Royalty-free / Copyright-free" SERVER switch → new search returned **60 results** including genuine free sources: Wikimedia Commons, Pixabay (incl. "Mountains, Nature, Landscape. Free Stock Video - Pixabay"), Pexels, Unsplash. Card aria-labels show "free / royalty-free" + "direct download available" badges. This directly satisfies the user's "VIDEO COPYRIGHT FREE" request.
+- Opened detail dialog on a Wikimedia Commons asset → metadata shows "License: Creative Commons / Public Domain" + snippet "free for any use including commercial purposes". Download/Save/Copy-link/Open-source buttons present.
+- Proxy download verified via curl: `GET /api/proxy-download?url=...unsplash...&filename=test.jpg` → HTTP 200, `content-disposition: attachment; filename="test.jpg"`, `content-type: image/jpeg`, `x-stocknova-proxy: 1`. Confirms files download directly from StockNova without redirecting to source.
+- Sticky footer verified on long page (60 results, 5734px doc height): wrapper min-h-screen + flex-col, main flex-1, footer mt-auto, footerAtDocEnd=true.
+- Color audit: 0 forbidden indigo/blue colors (emerald/amber only).
+- `bun run lint` — clean (0 errors). No console errors.
+
+Stage Summary:
+- All three user complaints resolved and browser-verified:
+  1. MORE RESULTS: 18 → 57-60 per search (3.2x) via multi-query fan-out.
+  2. COPYRIGHT-FREE FILTER: royalty-free server toggle returns genuine free sources (Wikimedia/Pixabay/Pexels/Unsplash) with license metadata; client-side "Free only" filter in rail.
+  3. DIRECT DOWNLOAD (no redirect): /api/proxy-download streams files with Content-Disposition: attachment; direct-downloadable assets download directly from StockNova.
+- StockNova upgrade is live, verified, and ready for the user.

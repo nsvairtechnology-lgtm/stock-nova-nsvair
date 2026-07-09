@@ -1,9 +1,10 @@
 'use client'
 
 import * as React from 'react'
-import { Search, Sparkles, Loader2, AlertCircle, X } from 'lucide-react'
+import { Search, Sparkles, Loader2, AlertCircle, X, BadgeCheck } from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
 import { motion } from 'framer-motion'
 import { useStockStore } from '@/lib/store'
 import { TrendingChips } from './trending-chips'
@@ -39,10 +40,21 @@ export function HeroSearch() {
   const runSearch = useStockStore((s) => s.runSearch)
   const loading = useStockStore((s) => s.loading)
   const error = useStockStore((s) => s.error)
+  const freeOnly = useStockStore((s) => s.freeOnly)
+  const setFreeOnly = useStockStore((s) => s.setFreeOnly)
 
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     runSearch()
+  }
+
+  const onToggleFree = (checked: boolean) => {
+    setFreeOnly(checked)
+    // Re-run search with the new free flag (defer to next tick so state has
+    // updated before runSearch reads it).
+    setTimeout(() => {
+      void runSearch()
+    }, 0)
   }
 
   return (
@@ -87,7 +99,7 @@ export function HeroSearch() {
               <Input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search anything: 'mountain landscape', 'lofi music', 'pitch deck'…"
+                placeholder="Search anything: 'mountain landscape', 'lofi music free', 'pitch deck'…"
                 className="h-12 border-0 bg-transparent pl-10 pr-9 text-base shadow-none focus-visible:ring-0"
                 aria-label="Search query"
                 enterKeyHint="search"
@@ -119,6 +131,42 @@ export function HeroSearch() {
               </span>
             </Button>
           </div>
+
+          {/* Royalty-free headline toggle row */}
+          <div className="mt-3 flex flex-wrap items-center justify-center gap-3">
+            <label
+              htmlFor="royalty-free-toggle"
+              className={cn(
+                'inline-flex cursor-pointer items-center gap-2.5 rounded-xl border px-3.5 py-2 text-xs font-medium transition-all',
+                freeOnly
+                  ? 'border-emerald-400/50 bg-emerald-500/15 text-emerald-300 shadow-[0_0_18px_-4px] shadow-emerald-500/40'
+                  : 'border-white/10 bg-white/5 text-zinc-300 hover:border-white/20 hover:bg-white/10',
+              )}
+            >
+              <BadgeCheck
+                className={cn(
+                  'size-4',
+                  freeOnly ? 'text-emerald-300' : 'text-zinc-400',
+                )}
+              />
+              <span>Royalty-free / Copyright-free</span>
+              <Switch
+                id="royalty-free-toggle"
+                checked={freeOnly}
+                onCheckedChange={onToggleFree}
+                aria-label="Toggle royalty-free / copyright-free results"
+                className={cn(
+                  'data-[state=checked]:bg-emerald-500 data-[state=unchecked]:bg-zinc-700',
+                )}
+              />
+            </label>
+          </div>
+
+          <p className="mt-2 text-center text-[11px] text-zinc-500">
+            Tip: toggle{' '}
+            <span className="text-emerald-400">Royalty-free</span> for
+            copyright-free results you can download directly.
+          </p>
 
           {/* Format chips */}
           <div className="mt-4 flex flex-wrap items-center justify-center gap-2">

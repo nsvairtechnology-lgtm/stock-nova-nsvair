@@ -15,6 +15,9 @@ interface StockNovaState {
   type: SearchType
   sources: SourceKey
   sort: SortKey
+  // server-side filter toggles (sent to /api/search)
+  freeOnly: boolean
+  directOnly: boolean
 
   // results
   results: Asset[]
@@ -26,6 +29,8 @@ interface StockNovaState {
 
   // filter rail (client-side filters applied on top of results)
   filterKind: AssetKind | 'all'
+  filterFree: boolean
+  filterDirect: boolean
 
   // detail dialog
   selectedAsset: Asset | null
@@ -40,6 +45,10 @@ interface StockNovaState {
   setSources: (s: SourceKey) => void
   setSort: (s: SortKey) => void
   setFilterKind: (k: AssetKind | 'all') => void
+  setFreeOnly: (b: boolean) => void
+  setDirectOnly: (b: boolean) => void
+  setFilterFree: (b: boolean) => void
+  setFilterDirect: (b: boolean) => void
 
   setResults: (r: Asset[]) => void
   setLoading: (b: boolean) => void
@@ -63,6 +72,8 @@ export const useStockStore = create<StockNovaState>((set, get) => ({
   type: 'all',
   sources: 'all',
   sort: 'relevance',
+  freeOnly: false,
+  directOnly: false,
   results: [],
   loading: false,
   lastQuery: '',
@@ -70,6 +81,8 @@ export const useStockStore = create<StockNovaState>((set, get) => ({
   hasSearched: false,
   error: null,
   filterKind: 'all',
+  filterFree: false,
+  filterDirect: false,
   selectedAsset: null,
   detailOpen: false,
   savedOpen: false,
@@ -79,6 +92,10 @@ export const useStockStore = create<StockNovaState>((set, get) => ({
   setSources: (s) => set({ sources: s }),
   setSort: (s) => set({ sort: s }),
   setFilterKind: (k) => set({ filterKind: k }),
+  setFreeOnly: (b) => set({ freeOnly: b }),
+  setDirectOnly: (b) => set({ directOnly: b }),
+  setFilterFree: (b) => set({ filterFree: b }),
+  setFilterDirect: (b) => set({ filterDirect: b }),
 
   setResults: (r) => set({ results: r }),
   setLoading: (b) => set({ loading: b }),
@@ -97,6 +114,7 @@ export const useStockStore = create<StockNovaState>((set, get) => ({
     const q = (args?.query ?? state.query).trim()
     const type = args?.type ?? state.type
     const sources = args?.sources ?? state.sources
+    const freeOnly = state.freeOnly
 
     if (!q) {
       set({ error: 'Please enter a search term.' })
@@ -112,10 +130,12 @@ export const useStockStore = create<StockNovaState>((set, get) => ({
       hasSearched: true,
       error: null,
       filterKind: 'all',
+      filterFree: false,
+      filterDirect: false,
     })
 
     try {
-      const url = `/api/search?q=${encodeURIComponent(q)}&type=${encodeURIComponent(type)}&sources=${encodeURIComponent(sources)}&limit=24`
+      const url = `/api/search?q=${encodeURIComponent(q)}&type=${encodeURIComponent(type)}&sources=${encodeURIComponent(sources)}&limit=60&free=${freeOnly ? '1' : '0'}`
       const r = await fetch(url)
       if (!r.ok) {
         const j = await r.json().catch(() => ({}))
@@ -146,6 +166,10 @@ export const useStockStore = create<StockNovaState>((set, get) => ({
       lastMs: null,
       hasSearched: false,
       filterKind: 'all',
+      freeOnly: false,
+      directOnly: false,
+      filterFree: false,
+      filterDirect: false,
       error: null,
     }),
 }))

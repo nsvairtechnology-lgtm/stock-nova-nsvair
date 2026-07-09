@@ -9,6 +9,9 @@ import {
   hostFromUrl,
   prettyHost,
   ytThumb,
+  isFreeSource,
+  licenseForHost,
+  isDirectDownloadable,
   type Asset,
   type AssetKind,
 } from '@/lib/classify'
@@ -89,15 +92,20 @@ async function imageSearch(query: string, count: number): Promise<Asset[]> {
           : it.original_height
             ? String(it.original_height)
             : undefined
+      const free = isFreeSource(it.original_url)
+      const url = it.original_url
       return {
-        assetId: assetId(it.original_url, kind),
+        assetId: assetId(url, kind),
         kind,
         title: it.caption?.trim() || it.source || host || 'Image result',
-        url: it.original_url,
-        thumbnail: it.original_url,
+        url,
+        thumbnail: url,
         source: it.source || 'image-search',
         host,
         snippet: it.caption || '',
+        free,
+        license: licenseForHost(url),
+        directDownload: isDirectDownloadable(url, kind),
         meta: { width: w, height: h, source: it.source },
       }
     })
@@ -106,36 +114,162 @@ async function imageSearch(query: string, count: number): Promise<Asset[]> {
   }
 }
 
-async function webSearch(query: string, num: number): Promise<WebResult[]> {
+// Single shared ZAI instance reused across all parallel web_search calls.
+let zaiPromise: Promise<unknown> | null = null
+async function getZai() {
+  if (!zaiPromise) zaiPromise = ZAI.create()
+  return zaiPromise as Promise<Awaited<ReturnType<typeof ZAI.create>>>
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+async function webSearch(query: string, num: number, attempt = 0): Promise<WebResult[]> {
   try {
-    const zai = await ZAI.create()
+    const zai = await getZai()
     const results = (await zai.functions.invoke('web_search', { query, num })) as WebResult[]
     if (!Array.isArray(results)) return []
     return results
-  } catch {
+  } catch (e) {
+    // Retry once after a brief pause on rate-limit (429) — this often happens
+    // when several web_search calls fire in parallel.
+    const msg = e instanceof Error ? e.message : String(e)
+    if (attempt < 2 && /429|too many requests/i.test(msg)) {
+      await sleep(800 * (attempt + 1))
+      return webSearch(query, num, attempt + 1)
+    }
     return []
   }
 }
 
-function buildQuery(query: string, type: SearchType): string {
+/* ------------------- Multi-query fan-out planner ------------------- */
+
+interface QueryPlan {
+  label: string
+  q: string
+  num: number
+}
+
+function buildQueries(query: string, type: SearchType, free: boolean): QueryPlan[] {
   const q = query.trim()
+  const NUM = 20
+
   switch (type) {
-    case 'video':
-      return `${q} site:youtube.com OR free stock video`
-    case 'audio':
-      return `${q} free stock audio music sound`
-    case 'pdf':
-      return `${q} filetype:pdf`
-    case 'doc':
-      return `${q} filetype:doc OR filetype:ppt OR filetype:docx OR filetype:pptx`
-    case 'social':
-      return `${q} site:twitter.com OR site:reddit.com OR site:pinterest.com OR site:instagram.com`
-    case 'image':
-      return q
+    case 'all': {
+      if (free) {
+        return [
+          { label: 'img-free', q: `${q} free royalty free`, num: NUM },
+          { label: 'web-free', q: `${q} free royalty free copyright free`, num: NUM },
+          {
+            label: 'web-free-sites',
+            q: `${q} site:unsplash.com OR site:pexels.com OR site:pixabay.com`,
+            num: NUM,
+          },
+          { label: 'web-public-domain', q: `${q} public domain creative commons`, num: NUM },
+          { label: 'web-free-stock', q: `${q} free stock download`, num: NUM },
+          { label: 'web-wikimedia', q: `${q} site:commons.wikimedia.org OR site:flickr.com`, num: NUM },
+        ]
+      }
+      return [
+        { label: 'img', q, num: NUM },
+        { label: 'web', q, num: NUM },
+        { label: 'web-free-download', q: `${q} free download`, num: NUM },
+        { label: 'web-stock', q: `${q} stock`, num: NUM },
+        { label: 'web-hd', q: `${q} hd 4k high quality`, num: NUM },
+        { label: 'web-wallpaper', q: `${q} wallpaper background`, num: NUM },
+      ]
+    }
+    case 'image': {
+      if (free) {
+        return [
+          { label: 'img-free', q: `${q} free`, num: NUM },
+          {
+            label: 'web-free-stocks',
+            q: `${q} free stock photo site:unsplash.com OR site:pexels.com OR site:pixabay.com OR site:stocksnap.io`,
+            num: NUM,
+          },
+        ]
+      }
+      return [
+        { label: 'img', q, num: NUM },
+        {
+          label: 'web-free-stocks',
+          q: `${q} free stock photo site:unsplash.com OR site:pexels.com OR site:pixabay.com OR site:stocksnap.io`,
+          num: NUM,
+        },
+      ]
+    }
+    case 'video': {
+      if (free) {
+        return [
+          {
+            label: 'web-free-stocks',
+            q: `${q} free stock video site:pexels.com OR site:pixabay.com OR site:coverr.co OR site:mixkit.co`,
+            num: NUM,
+          },
+          { label: 'web-royalty-free', q: `${q} royalty free video download`, num: NUM },
+          { label: 'web-free-copyright', q: `${q} free copyright free video`, num: NUM },
+        ]
+      }
+      return [
+        { label: 'web-yt', q: `${q} site:youtube.com`, num: NUM },
+        {
+          label: 'web-free-stocks',
+          q: `${q} free stock video site:pexels.com OR site:pixabay.com OR site:coverr.co OR site:mixkit.co`,
+          num: NUM,
+        },
+        { label: 'web-royalty-free', q: `${q} royalty free video download`, num: NUM },
+      ]
+    }
+    case 'audio': {
+      return [
+        {
+          label: 'web-free-music-sites',
+          q: `${q} free music site:pixabay.com OR site:freesound.org OR site:freemusicarchive.org OR site:bensound.com`,
+          num: NUM,
+        },
+        { label: 'web-royalty-free', q: `${q} royalty free audio download`, num: NUM },
+        { label: 'web-sfx', q: `${q} free sound effect`, num: NUM },
+      ]
+    }
+    case 'pdf': {
+      return [
+        { label: 'web-pdf', q: `${q} filetype:pdf`, num: NUM },
+        { label: 'web-research', q: `${q} research paper pdf`, num: NUM },
+        { label: 'web-ebook', q: `${q} free ebook pdf`, num: NUM },
+      ]
+    }
+    case 'doc': {
+      return [
+        {
+          label: 'web-doc-types',
+          q: `${q} filetype:doc OR filetype:ppt OR filetype:docx OR filetype:pptx`,
+          num: NUM,
+        },
+        { label: 'web-templates', q: `${q} template slides free download`, num: NUM },
+      ]
+    }
+    case 'social': {
+      return [
+        {
+          label: 'web-social-1',
+          q: `${q} site:twitter.com OR site:x.com OR site:reddit.com`,
+          num: NUM,
+        },
+        {
+          label: 'web-social-2',
+          q: `${q} site:pinterest.com OR site:instagram.com OR site:tiktok.com`,
+          num: NUM,
+        },
+      ]
+    }
     case 'web':
-    case 'all':
-    default:
-      return q
+    default: {
+      return [
+        { label: 'web', q, num: NUM },
+        { label: 'web-article', q: `${q} article blog guide`, num: NUM },
+        { label: 'web-news', q: `${q} news`, num: NUM },
+      ]
+    }
   }
 }
 
@@ -147,28 +281,27 @@ function shouldUseImage(type: SearchType, sources: SourceKey): boolean {
   return type === 'image'
 }
 
-function shouldUseWeb(type: SearchType, sources: SourceKey): boolean {
-  if (sources === 'images') return false
-  if (type === 'image') return false
-  return true
-}
-
 function webResultToAsset(r: WebResult): Asset {
   const host = r.host_name || hostFromUrl(r.url)
   const kind = classifyKind(r.url, host)
   const thumb = kind === 'video' ? ytThumb(r.url) : undefined
+  const url = r.url
+  const free = isFreeSource(url)
   return {
-    assetId: assetId(r.url, kind),
+    assetId: assetId(url, kind),
     kind,
-    title: r.name?.trim() || prettyHost(r.url),
-    url: r.url,
+    title: r.name?.trim() || prettyHost(url),
+    url,
     thumbnail: thumb,
     source:
       kind === 'video' && host.includes('youtube')
         ? 'youtube'
-        : prettyHost(r.url),
-    host: prettyHost(r.url),
+        : prettyHost(url),
+    host: prettyHost(url),
     snippet: r.snippet || '',
+    free,
+    license: licenseForHost(url),
+    directDownload: isDirectDownloadable(url, kind),
     meta: {
       rank: r.rank,
       date: r.date,
@@ -204,9 +337,10 @@ export async function GET(req: NextRequest) {
   const q = (sp.get('q') || '').trim()
   const type = (sp.get('type') || 'all') as SearchType
   const sources = (sp.get('sources') || 'all') as SourceKey
+  const free = sp.get('free') === '1'
   const limit = Math.max(
     1,
-    Math.min(60, parseInt(sp.get('limit') || '24', 10)),
+    Math.min(120, parseInt(sp.get('limit') || '60', 10)),
   )
 
   if (!q) {
@@ -222,21 +356,44 @@ export async function GET(req: NextRequest) {
     )
   }
 
+  // Build the multi-query plan
+  const plans = buildQueries(q, type, free)
+
+  // Decide whether to include image-search as one of the parallel tasks.
+  // image-search has its own dedicated query (the first plan when label starts
+  // with "img"), and we only run it for the appropriate types/sources.
+  const includeImage = shouldUseImage(type, sources)
+  const imgPlan = includeImage
+    ? plans.find((p) => p.label.startsWith('img'))
+    : undefined
+  const webPlans = plans.filter((p) => !p.label.startsWith('img'))
+
+  // Each task is wrapped so a failure returns []. Run image-search in parallel
+  // with the web searches; the web searches themselves run SEQUENTIALLY to
+  // avoid hitting the upstream ZAI API rate limit (429) when several fire at
+  // once. Each individual web_search call already retries on 429.
   const tasks: Promise<Asset[]>[] = []
 
-  if (shouldUseImage(type, sources)) {
-    const imgCount =
-      type === 'all' ? Math.min(8, Math.ceil(limit / 3)) : limit
-    tasks.push(imageSearch(q, imgCount))
+  if (imgPlan) {
+    tasks.push(imageSearch(imgPlan.q, Math.min(20, imgPlan.num)).catch(() => []))
   }
-  if (shouldUseWeb(type, sources)) {
-    const webNum =
-      type === 'all'
-        ? Math.min(16, Math.ceil((limit * 2) / 3))
-        : Math.min(30, limit + 6)
-    const wq = buildQuery(q, type)
-    tasks.push(webSearch(wq, webNum).then((rs) => rs.map(webResultToAsset)))
-  }
+
+  // Chain the web plans serially with a small inter-call delay to keep us
+  // under the upstream ZAI web_search rate limit.
+  const webChain = (async () => {
+    const out: Asset[] = []
+    for (let i = 0; i < webPlans.length; i++) {
+      if (i > 0) await sleep(1200) // breathe between calls to avoid 429
+      try {
+        const rs = await webSearch(webPlans[i].q, webPlans[i].num)
+        out.push(...rs.map(webResultToAsset))
+      } catch {
+        // ignore — keep going
+      }
+    }
+    return out
+  })()
+  tasks.push(webChain)
 
   let merged: Asset[] = []
   try {
@@ -246,7 +403,7 @@ export async function GET(req: NextRequest) {
     merged = []
   }
 
-  // dedupe by assetId
+  // dedupe by assetId (keep first occurrence — image-search wins for images)
   const seen = new Set<string>()
   const deduped: Asset[] = []
   for (const a of merged) {
@@ -256,11 +413,25 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // when type is specific, filter to that kind (in case web_search returned mixed)
+  // NOTE: We intentionally do NOT filter by kind here for specific types. The
+  // multi-query plan above already targets the right kind (e.g. `site:youtube.com`
+  // for video, `filetype:pdf` for pdf, `site:pexels.com OR site:pixabay.com` for
+  // free video). Many free-stock video/audio hosts (Pexels, Pixabay, Mixkit,
+  // Bensound, Freesound…) are NOT in classifyKind's VIDEO_HOSTS / AUDIO_HOSTS
+  // sets, so they'd be labelled 'web' and wrongly dropped. The user can still
+  // narrow with the format filter rail in the UI.
   let results = deduped
-  if (type !== 'all' && type !== 'web') {
-    results = deduped.filter((a) => a.kind === type)
+
+  // When free mode is on, prioritize free + direct-downloadable assets first,
+  // but still return everything (so the user can browse).
+  if (free) {
+    results = [...results].sort((a, b) => {
+      const score = (x: Asset) =>
+        (x.free ? 2 : 0) + (x.directDownload ? 1 : 0)
+      return score(b) - score(a)
+    })
   }
+
   results = results.slice(0, limit)
 
   const ms = Date.now() - t0

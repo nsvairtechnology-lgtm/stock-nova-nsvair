@@ -14,7 +14,7 @@ import {
 } from '@/components/ui/dialog'
 import { useStockStore } from '@/lib/store'
 import type { Asset } from '@/lib/types'
-import { faviconUrl, prettyHost } from '@/lib/classify'
+import { faviconUrl, prettyHost, suggestFilename } from '@/lib/classify'
 import { cn } from '@/lib/utils'
 
 interface SavedRow {
@@ -83,6 +83,19 @@ export function AssetDetailDialog() {
 
   const dlMut = useMutation({
     mutationFn: async (a: Asset) => {
+      // Direct-downloadable assets: stream through the StockNova proxy and
+      // skip the logging POST (the proxy already logs a DownloadLog row).
+      if (a.directDownload) {
+        const params = new URLSearchParams({
+          url: a.url,
+          filename: suggestFilename(a),
+          assetId: a.assetId,
+          title: a.title,
+          type: a.kind,
+          source: a.source,
+        })
+        return { proxy: true, href: `/api/proxy-download?${params.toString()}` }
+      }
       const r = await fetch('/api/download', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -97,9 +110,14 @@ export function AssetDetailDialog() {
       if (!r.ok) throw new Error('failed')
       return r.json()
     },
-    onSuccess: (_d, a) => {
-      window.open(a.url, '_blank', 'noopener,noreferrer')
-      toast.success('Opening download…')
+    onSuccess: (d, a) => {
+      if (d && typeof d === 'object' && 'proxy' in d && d.proxy) {
+        window.location.href = (d as { href: string }).href
+        toast.success('Downloading directly from StockNova…')
+      } else {
+        window.open(a.url, '_blank', 'noopener,noreferrer')
+        toast.success('Opening source…')
+      }
     },
     onError: () => toast.error('Could not start download.'),
   })
@@ -148,6 +166,13 @@ export function AssetDetailDialog() {
               <div className="mt-4 flex flex-wrap gap-2 text-xs text-zinc-400">
                 <Meta label="Source" value={asset.source || prettyHost(asset.url)} />
                 <Meta label="Host" value={prettyHost(asset.url)} />
+                {asset.license ? (
+                  <Meta label="License" value={asset.license} />
+                ) : null}
+                {asset.free ? <Meta label="Free" value="Yes" /> : null}
+                {asset.directDownload ? (
+                  <Meta label="Direct download" value="Yes" />
+                ) : null}
                 {asset.meta?.width && asset.meta?.height && (
                   <Meta
                     label="Dimensions"
@@ -212,6 +237,12 @@ export function AssetDetailDialog() {
                   </a>
                 </Button>
               </div>
+
+              {asset.directDownload && (
+                <p className="mt-3 text-xs text-emerald-300">
+                  Downloads directly from StockNova — no redirect to the source site.
+                </p>
+              )}
 
               <div className="mt-4 break-all rounded-lg border border-white/10 bg-black/30 p-3 text-xs text-zinc-400">
                 {asset.url}

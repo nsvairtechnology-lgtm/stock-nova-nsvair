@@ -21,6 +21,7 @@ import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
+import { isDirectDownloadable, suggestFilename } from '@/lib/classify'
 
 interface SavedRow {
   id: string
@@ -80,6 +81,19 @@ export function SavedDrawerList() {
 
   const download = useMutation({
     mutationFn: async (a: SavedRow) => {
+      // Direct-downloadable assets (image/pdf/doc/audio or direct file URLs):
+      // stream through the StockNova proxy — no redirect to source.
+      if (isDirectDownloadable(a.url, a.type as Parameters<typeof isDirectDownloadable>[1])) {
+        const params = new URLSearchParams({
+          url: a.url,
+          filename: suggestFilename({ title: a.title, url: a.url, kind: a.type }),
+          assetId: a.assetId,
+          title: a.title,
+          type: a.type,
+          source: a.source,
+        })
+        return { proxy: true, href: `/api/proxy-download?${params.toString()}` }
+      }
       const r = await fetch('/api/download', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -94,8 +108,14 @@ export function SavedDrawerList() {
       if (!r.ok) throw new Error('failed')
       return r.json()
     },
-    onSuccess: (_d, a) => {
-      window.open(a.url, '_blank', 'noopener,noreferrer')
+    onSuccess: (d, a) => {
+      if (d && typeof d === 'object' && 'proxy' in d && d.proxy) {
+        window.location.href = (d as { href: string }).href
+        toast.success('Downloading directly from StockNova…')
+      } else {
+        window.open(a.url, '_blank', 'noopener,noreferrer')
+        toast.success('Opening source…')
+      }
     },
     onError: () => toast.error('Could not start download.'),
   })
