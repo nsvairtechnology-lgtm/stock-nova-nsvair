@@ -1,0 +1,65 @@
+// StockNova — Universal Stock Media Portal schema
+// Learn more: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Tracks every search performed on the portal (for analytics + "recent searches")
+model SearchHistory {
+  id        String   @id @default(cuid())
+  query     String
+  type      String   @default("all") // all | image | video | audio | pdf | doc | social | web
+  sources   String   @default("")    // comma-separated source keys, e.g. "google,youtube,web"
+  resultCount Int    @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([query])
+  @@index([createdAt])
+}
+
+// Aggregates trending keyword counts
+model TrendingKeyword {
+  id        String   @id @default(cuid())
+  keyword   String   @unique
+  count     Int      @default(1)
+  category  String   @default("general") // general | image | video | audio | doc
+  updatedAt DateTime @updatedAt
+
+  @@index([count])
+  @@index([category])
+}
+
+// Assets the user saved / bookmarked (stored client-side via this table)
+model SavedAsset {
+  id        String   @id @default(cuid())
+  assetId   String   // client-generated stable id (url+type hash)
+  title     String
+  type      String   // image | video | audio | pdf | doc | web | social
+  url       String
+  thumbnail String?
+  source    String   // google | youtube | web | unsplash | pinterest | ...
+  meta      String?  // JSON string with extra metadata
+  createdAt DateTime @default(now())
+
+  @@unique([assetId])
+  @@index([type])
+}
+
+// Download history
+model DownloadLog {
+  id        String   @id @default(cuid())
+  assetId   String
+  title     String
+  type      String
+  url       String
+  source    String
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
