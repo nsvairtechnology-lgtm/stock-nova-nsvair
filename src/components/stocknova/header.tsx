@@ -47,15 +47,22 @@ export function SiteHeader() {
         {/* Logo */}
         <a
           href="/"
-          className="group flex items-center gap-2"
-          aria-label="StockNova home"
+          className="group flex items-center gap-3"
+          aria-label="NSVAIR StockNova home"
         >
-          <span className="relative inline-flex size-8 items-center justify-center rounded-xl bg-emerald-500/10 ring-1 ring-emerald-400/30">
-            <Sparkles className="size-4 text-emerald-400 sn-pulse" />
+          <span className="relative inline-flex size-9 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-500/20 to-teal-500/10 ring-1 ring-emerald-400/30 transition-transform group-hover:scale-105">
+            <Sparkles className="size-4.5 text-emerald-400 sn-pulse" />
           </span>
-          <span className="text-lg font-semibold tracking-tight">
-            Stock<span className="text-emerald-400">Nova</span>
-          </span>
+          <div className="flex flex-col">
+            <div className="flex items-center gap-1.5 leading-tight">
+              <span className="text-base font-bold tracking-tight text-white sm:text-lg">
+                NSVAIR <span className="text-emerald-400">StockNova</span>
+              </span>
+            </div>
+            <span className="text-[10px] font-medium tracking-wider text-emerald-400/80">
+              Powered by NSVAIR
+            </span>
+          </div>
         </a>
 
         {/* Desktop actions */}

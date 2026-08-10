@@ -14,11 +14,14 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "StockNova — The universe of media, one search away.",
+  title: "NSVAIR StockNova — Universal Stock Media Discovery | Powered by NSVAIR",
   description:
-    "StockNova is a universal stock media discovery portal. Search once and discover images, videos, audio, PDFs, documents and web/social content from across the whole web.",
+    "NSVAIR StockNova is a universal stock media discovery portal powered by NSVAIR. Search once and discover images, videos, audio, PDFs, documents and web/social content from across the whole web.",
   keywords: [
+    "NSVAIR",
+    "NSVAIR StockNova",
     "StockNova",
+    "Powered by NSVAIR",
     "stock media",
     "image search",
     "video search",
@@ -26,22 +29,22 @@ export const metadata: Metadata = {
     "PDF",
     "free stock assets",
   ],
-  authors: [{ name: "StockNova" }],
+  authors: [{ name: "NSVAIR Technology" }],
   icons: {
     icon: "/logo.svg",
   },
   openGraph: {
-    title: "StockNova — The universe of media, one search away.",
+    title: "NSVAIR StockNova — The universe of media, one search away.",
     description:
-      "A universal stock media discovery portal aggregating images, videos, audio, PDFs and web content from across the internet.",
-    siteName: "StockNova",
+      "A universal stock media discovery portal powered by NSVAIR aggregating images, videos, audio, PDFs and web content from across the internet.",
+    siteName: "NSVAIR StockNova",
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
-    title: "StockNova",
+    title: "NSVAIR StockNova — Powered by NSVAIR",
     description:
-      "The universe of media, one search away.",
+      "The universe of media, one search away. Powered by NSVAIR.",
   },
 };
 

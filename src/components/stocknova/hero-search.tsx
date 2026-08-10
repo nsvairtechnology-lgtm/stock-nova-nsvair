@@ -66,9 +66,9 @@ export function HeroSearch() {
           transition={{ duration: 0.5 }}
           className="text-center"
         >
-          <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-emerald-400/20 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-300">
-            <Sparkles className="size-3.5 sn-pulse" />
-            Universal stock media discovery
+          <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-emerald-400/30 bg-emerald-500/10 px-3.5 py-1 text-xs font-medium text-emerald-300 backdrop-blur-md shadow-sm">
+            <Sparkles className="size-3.5 sn-pulse text-emerald-400" />
+            <span>NSVAIR StockNova • Powered by NSVAIR</span>
           </div>
           <h1 className="text-balance text-3xl font-bold tracking-tight sm:text-5xl lg:text-6xl">
             The universe of media,
@@ -79,8 +79,7 @@ export function HeroSearch() {
           </h1>
           <p className="mx-auto mt-4 max-w-2xl text-balance text-sm text-zinc-400 sm:text-base">
             Type a keyword and instantly discover stock-relevant images, videos,
-            audio, PDFs, documents and web/social content — sourced from across
-            the whole web.
+            audio, PDFs, documents and web/social content — powered by NSVAIR.
           </p>
         </motion.div>
 
@@ -91,7 +90,7 @@ export function HeroSearch() {
           onSubmit={onSubmit}
           className="mx-auto mt-8 w-full max-w-3xl"
           role="search"
-          aria-label="StockNova universal search"
+          aria-label="NSVAIR StockNova universal search"
         >
           <div className="sn-glass-strong flex items-center gap-2 rounded-2xl p-2 shadow-2xl">
             <div className="relative flex-1">

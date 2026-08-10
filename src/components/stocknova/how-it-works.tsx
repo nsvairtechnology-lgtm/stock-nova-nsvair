@@ -12,7 +12,7 @@ const STEPS = [
   {
     icon: <MousePointerClick className="size-5 text-amber-400" />,
     title: '2. Discover instantly',
-    desc: 'StockNova queries the whole web in parallel — images, videos, audio, PDFs and more — and classifies each hit.',
+    desc: 'NSVAIR StockNova queries the whole web in parallel — images, videos, audio, PDFs and more — and classifies each hit.',
   },
   {
     icon: <Download className="size-5 text-emerald-400" />,

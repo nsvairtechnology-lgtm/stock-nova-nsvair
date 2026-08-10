@@ -27,18 +27,21 @@ export function SiteFooter() {
       <div className="mx-auto w-full max-w-7xl px-4 py-12 sm:px-6 lg:px-8">
         <div className="grid gap-10 md:grid-cols-2 lg:grid-cols-6">
           <div className="lg:col-span-2">
-            <div className="flex items-center gap-2">
-              <span className="relative inline-flex">
-                <Sparkles className="size-5 text-emerald-400" />
+            <div className="flex items-center gap-2.5">
+              <span className="relative inline-flex size-7 items-center justify-center rounded-lg bg-emerald-500/15 ring-1 ring-emerald-400/30">
+                <Sparkles className="size-4 text-emerald-400" />
               </span>
-              <span className="text-lg font-semibold tracking-tight">
-                Stock<span className="text-emerald-400">Nova</span>
+              <span className="text-lg font-bold tracking-tight text-white">
+                NSVAIR <span className="text-emerald-400">StockNova</span>
               </span>
             </div>
             <p className="mt-3 max-w-xs text-sm text-zinc-400">
               The universe of media, one search away. Discover images, videos,
               audio, PDFs, documents and web content from across the whole web.
             </p>
+            <div className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-emerald-500/20 bg-emerald-500/10 px-2.5 py-0.5 text-xs text-emerald-300">
+              <span>⚡</span> Powered by NSVAIR
+            </div>
           </div>
 
           {COLS.map((col) => (
@@ -62,11 +65,10 @@ export function SiteFooter() {
 
         <div className="mt-10 flex flex-col items-start justify-between gap-3 border-t border-white/5 pt-6 text-xs text-zinc-500 sm:flex-row sm:items-center">
           <p>
-            © {new Date().getFullYear()} StockNova. All rights reserved.
+            © {new Date().getFullYear()} NSVAIR StockNova. All rights reserved.
           </p>
           <p>
-            Powered by <span className="text-emerald-400">ZAI</span> web &amp; image
-            search.
+            Powered by <span className="font-medium text-emerald-400">NSVAIR</span> Technology.
           </p>
         </div>
       </div>
