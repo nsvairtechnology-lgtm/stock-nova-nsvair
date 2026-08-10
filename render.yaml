@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: stock-nova
+    runtime: node
+    plan: free
+    buildCommand: npm install && npx prisma@6.11.1 generate && npx prisma@6.11.1 db push --accept-data-loss && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        value: file:../db/custom.db

@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createHash } from 'node:crypto'
-import ZAI from 'z-ai-web-dev-sdk'
 import { db } from '@/lib/db'
 import {
   classifyKind,
@@ -54,7 +53,6 @@ function parseImageStdout(stdout: string): ImgResult[] {
     const parsed = JSON.parse(slice)
     if (parsed && Array.isArray(parsed.results)) return parsed.results as ImgResult[]
   } catch {
-    // try to find a JSON object spanning to the end
     const end = slice.lastIndexOf('}')
     if (end > 0) {
       try {
@@ -68,13 +66,13 @@ function parseImageStdout(stdout: string): ImgResult[] {
   return []
 }
 
-async function imageSearch(query: string, count: number): Promise<Asset[]> {
+async function imageSearchCli(query: string, count: number): Promise<Asset[]> {
   const n = Math.max(1, Math.min(20, count))
   try {
     const { stdout } = await execFileP(
       'z-ai',
       ['image-search', '-q', query, '--count', String(n), '--gl', 'us', '--no-rank'],
-      { timeout: 120000, maxBuffer: 20 * 1024 * 1024 },
+      { timeout: 30000, maxBuffer: 20 * 1024 * 1024 },
     )
     const items = parseImageStdout(stdout)
     return items.map((it) => {
@@ -114,171 +112,258 @@ async function imageSearch(query: string, count: number): Promise<Asset[]> {
   }
 }
 
-// Single shared ZAI instance reused across all parallel web_search calls.
-let zaiPromise: Promise<unknown> | null = null
-async function getZai() {
-  if (!zaiPromise) zaiPromise = ZAI.create()
-  return zaiPromise as Promise<Awaited<ReturnType<typeof ZAI.create>>>
-}
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
-
-async function webSearch(query: string, num: number, attempt = 0): Promise<WebResult[]> {
+// Openverse Search API (Creative Commons Free Images & Audio)
+async function searchOpenverse(query: string, type: 'images' | 'audio', count = 20): Promise<Asset[]> {
   try {
-    const zai = await getZai()
-    const results = (await zai.functions.invoke('web_search', { query, num })) as WebResult[]
-    if (!Array.isArray(results)) return []
-    return results
-  } catch (e) {
-    // Retry once after a brief pause on rate-limit (429) — this often happens
-    // when several web_search calls fire in parallel.
-    const msg = e instanceof Error ? e.message : String(e)
-    if (attempt < 2 && /429|too many requests/i.test(msg)) {
-      await sleep(800 * (attempt + 1))
-      return webSearch(query, num, attempt + 1)
-    }
+    const url = `https://api.openverse.org/v1/${type}/?q=${encodeURIComponent(query)}&page_size=${count}`
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'StockNova/1.0 (https://nsvair-stock-nova.onrender.com)' },
+      next: { revalidate: 3600 },
+      // @ts-expect-error Node 18+ timeout
+      signal: AbortSignal.timeout(10000),
+    })
+    if (!res.ok) return []
+    const data = await res.json()
+    const results = (data.results || []) as Array<{
+      id?: string
+      title?: string
+      url: string
+      thumbnail?: string
+      license?: string
+      creator?: string
+      width?: number
+      height?: number
+      audio_set?: { title?: string }
+    }>
+
+    return results.map((r) => {
+      const kind: AssetKind = type === 'audio' ? 'audio' : 'image'
+      const host = prettyHost(r.url)
+      return {
+        assetId: assetId(r.url, kind),
+        kind,
+        title: r.title?.trim() || `${kind === 'audio' ? 'Audio Track' : 'Stock Image'} (${query})`,
+        url: r.url,
+        thumbnail: r.thumbnail || (kind === 'image' ? r.url : undefined),
+        source: 'openverse',
+        host,
+        snippet: r.creator ? `By ${r.creator} • License: ${r.license || 'CC'}` : `License: ${r.license || 'CC'}`,
+        free: true,
+        license: r.license ? `CC ${r.license.toUpperCase()}` : 'Free Creative Commons',
+        directDownload: isDirectDownloadable(r.url, kind),
+        meta: {
+          width: r.width ? String(r.width) : undefined,
+          height: r.height ? String(r.height) : undefined,
+          creator: r.creator,
+          license: r.license,
+        },
+      }
+    })
+  } catch {
     return []
   }
 }
 
-/* ------------------- Multi-query fan-out planner ------------------- */
+// Wikimedia Commons Search API (Free Images, Video, Audio, Docs)
+async function searchWikimediaCommons(query: string, count = 20): Promise<Asset[]> {
+  try {
+    const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(query)}&gsrnamespace=6&gsrlimit=${count}&prop=imageinfo&iiprop=url|size|mime|extmetadata&format=json`
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'StockNova/1.0' },
+      next: { revalidate: 3600 },
+      // @ts-expect-error Node 18+ timeout
+      signal: AbortSignal.timeout(10000),
+    })
+    if (!res.ok) return []
+    const data = await res.json()
+    const pages = Object.values(data.query?.pages || {}) as Array<{
+      title?: string
+      imageinfo?: Array<{
+        url: string
+        thumburl?: string
+        descriptionshorturl?: string
+        mime?: string
+        width?: number
+        height?: number
+        extmetadata?: {
+          ObjectName?: { value?: string }
+          LicenseShortName?: { value?: string }
+          Artist?: { value?: string }
+        }
+      }>
+    }>
 
-interface QueryPlan {
-  label: string
-  q: string
-  num: number
-}
+    const assets: Asset[] = []
+    for (const p of pages) {
+      const info = p.imageinfo?.[0]
+      if (!info || !info.url) continue
+      const fileUrl = info.url
+      const mime = (info.mime || '').toLowerCase()
+      let kind: AssetKind = 'image'
+      if (mime.startsWith('video') || fileUrl.endsWith('.webm') || fileUrl.endsWith('.ogv') || fileUrl.endsWith('.mp4')) {
+        kind = 'video'
+      } else if (mime.startsWith('audio') || fileUrl.endsWith('.ogg') || fileUrl.endsWith('.oga') || fileUrl.endsWith('.mp3')) {
+        kind = 'audio'
+      } else if (mime.includes('pdf') || fileUrl.endsWith('.pdf')) {
+        kind = 'pdf'
+      }
 
-function buildQueries(query: string, type: SearchType, free: boolean): QueryPlan[] {
-  const q = query.trim()
-  const NUM = 20
+      const cleanTitle = (info.extmetadata?.ObjectName?.value || p.title || 'Wikimedia Media')
+        .replace(/^File:/i, '')
+        .replace(/\.[a-z0-9]+$/i, '')
+        .replace(/[_-]+/g, ' ')
 
-  switch (type) {
-    case 'all': {
-      if (free) {
-        return [
-          { label: 'img-free', q: `${q} free royalty free`, num: NUM },
-          { label: 'web-free', q: `${q} free royalty free copyright free`, num: NUM },
-          {
-            label: 'web-free-sites',
-            q: `${q} site:unsplash.com OR site:pexels.com OR site:pixabay.com`,
-            num: NUM,
-          },
-          { label: 'web-public-domain', q: `${q} public domain creative commons`, num: NUM },
-          { label: 'web-free-stock', q: `${q} free stock download`, num: NUM },
-          { label: 'web-wikimedia', q: `${q} site:commons.wikimedia.org OR site:flickr.com`, num: NUM },
-        ]
-      }
-      return [
-        { label: 'img', q, num: NUM },
-        { label: 'web', q, num: NUM },
-        { label: 'web-free-download', q: `${q} free download`, num: NUM },
-        { label: 'web-stock', q: `${q} stock`, num: NUM },
-        { label: 'web-hd', q: `${q} hd 4k high quality`, num: NUM },
-        { label: 'web-wallpaper', q: `${q} wallpaper background`, num: NUM },
-      ]
-    }
-    case 'image': {
-      if (free) {
-        return [
-          { label: 'img-free', q: `${q} free`, num: NUM },
-          {
-            label: 'web-free-stocks',
-            q: `${q} free stock photo site:unsplash.com OR site:pexels.com OR site:pixabay.com OR site:stocksnap.io`,
-            num: NUM,
-          },
-        ]
-      }
-      return [
-        { label: 'img', q, num: NUM },
-        {
-          label: 'web-free-stocks',
-          q: `${q} free stock photo site:unsplash.com OR site:pexels.com OR site:pixabay.com OR site:stocksnap.io`,
-          num: NUM,
+      const license = info.extmetadata?.LicenseShortName?.value || 'CC BY-SA / Public Domain'
+
+      assets.push({
+        assetId: assetId(fileUrl, kind),
+        kind,
+        title: cleanTitle,
+        url: fileUrl,
+        thumbnail: info.thumburl || (kind === 'image' ? fileUrl : undefined),
+        source: 'wikimedia',
+        host: 'commons.wikimedia.org',
+        snippet: `Wikimedia Commons • ${license}`,
+        free: true,
+        license,
+        directDownload: true,
+        meta: {
+          width: info.width ? String(info.width) : undefined,
+          height: info.height ? String(info.height) : undefined,
+          mime: info.mime,
         },
-      ]
+      })
     }
-    case 'video': {
-      if (free) {
-        return [
-          {
-            label: 'web-free-stocks',
-            q: `${q} free stock video site:pexels.com OR site:pixabay.com OR site:coverr.co OR site:mixkit.co`,
-            num: NUM,
-          },
-          { label: 'web-royalty-free', q: `${q} royalty free video download`, num: NUM },
-          { label: 'web-free-copyright', q: `${q} free copyright free video`, num: NUM },
-        ]
-      }
-      return [
-        { label: 'web-yt', q: `${q} site:youtube.com`, num: NUM },
-        {
-          label: 'web-free-stocks',
-          q: `${q} free stock video site:pexels.com OR site:pixabay.com OR site:coverr.co OR site:mixkit.co`,
-          num: NUM,
-        },
-        { label: 'web-royalty-free', q: `${q} royalty free video download`, num: NUM },
-      ]
-    }
-    case 'audio': {
-      return [
-        {
-          label: 'web-free-music-sites',
-          q: `${q} free music site:pixabay.com OR site:freesound.org OR site:freemusicarchive.org OR site:bensound.com`,
-          num: NUM,
-        },
-        { label: 'web-royalty-free', q: `${q} royalty free audio download`, num: NUM },
-        { label: 'web-sfx', q: `${q} free sound effect`, num: NUM },
-      ]
-    }
-    case 'pdf': {
-      return [
-        { label: 'web-pdf', q: `${q} filetype:pdf`, num: NUM },
-        { label: 'web-research', q: `${q} research paper pdf`, num: NUM },
-        { label: 'web-ebook', q: `${q} free ebook pdf`, num: NUM },
-      ]
-    }
-    case 'doc': {
-      return [
-        {
-          label: 'web-doc-types',
-          q: `${q} filetype:doc OR filetype:ppt OR filetype:docx OR filetype:pptx`,
-          num: NUM,
-        },
-        { label: 'web-templates', q: `${q} template slides free download`, num: NUM },
-      ]
-    }
-    case 'social': {
-      return [
-        {
-          label: 'web-social-1',
-          q: `${q} site:twitter.com OR site:x.com OR site:reddit.com`,
-          num: NUM,
-        },
-        {
-          label: 'web-social-2',
-          q: `${q} site:pinterest.com OR site:instagram.com OR site:tiktok.com`,
-          num: NUM,
-        },
-      ]
-    }
-    case 'web':
-    default: {
-      return [
-        { label: 'web', q, num: NUM },
-        { label: 'web-article', q: `${q} article blog guide`, num: NUM },
-        { label: 'web-news', q: `${q} news`, num: NUM },
-      ]
-    }
+    return assets
+  } catch {
+    return []
   }
 }
 
-function shouldUseImage(type: SearchType, sources: SourceKey): boolean {
-  if (sources === 'images') return true
-  if (sources === 'all' || sources === 'google') {
-    return type === 'all' || type === 'image'
+// arXiv Search API for research papers and PDFs
+async function searchArxiv(query: string, count = 15): Promise<Asset[]> {
+  try {
+    const url = `https://export.arxiv.org/api/query?search_query=all:${encodeURIComponent(query)}&start=0&max_results=${count}`
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'StockNova/1.0' },
+      next: { revalidate: 3600 },
+      // @ts-expect-error Node 18+ timeout
+      signal: AbortSignal.timeout(10000),
+    })
+    if (!res.ok) return []
+    const text = await res.text()
+    
+    // Parse arXiv XML entries
+    const entries = text.split('<entry>').slice(1)
+    const assets: Asset[] = []
+    for (const e of entries) {
+      const titleMatch = e.match(/<title>([\s\S]*?)<\/title>/)
+      const summaryMatch = e.match(/<summary>([\s\S]*?)<\/summary>/)
+      const idMatch = e.match(/<id>([\s\S]*?)<\/id>/)
+      
+      const title = titleMatch ? titleMatch[1].trim().replace(/\s+/g, ' ') : 'Research Paper'
+      const summary = summaryMatch ? summaryMatch[1].trim().replace(/\s+/g, ' ') : ''
+      const arxivIdUrl = idMatch ? idMatch[1].trim() : ''
+      
+      const pdfUrl = arxivIdUrl.replace('abs', 'pdf') + '.pdf'
+      if (!pdfUrl.startsWith('http')) continue
+
+      assets.push({
+        assetId: assetId(pdfUrl, 'pdf'),
+        kind: 'pdf',
+        title,
+        url: pdfUrl,
+        source: 'arxiv',
+        host: 'arxiv.org',
+        snippet: summary.slice(0, 200) + '...',
+        free: true,
+        license: 'Open Access / arXiv',
+        directDownload: true,
+        meta: {
+          arxivUrl: arxivIdUrl,
+        },
+      })
+    }
+    return assets
+  } catch {
+    return []
   }
-  return type === 'image'
+}
+
+// Internet Archive API (Video, Audio, Docs, Texts)
+async function searchArchiveOrg(query: string, count = 20): Promise<Asset[]> {
+  try {
+    const url = `https://archive.org/advancedsearch.php?q=${encodeURIComponent(query)}+AND+mediatype:(movies+OR+audio+OR+texts)&fl[]=identifier,title,description,mediatype,downloads&rows=${count}&output=json`
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'StockNova/1.0' },
+      next: { revalidate: 3600 },
+      // @ts-expect-error Node 18+ timeout
+      signal: AbortSignal.timeout(10000),
+    })
+    if (!res.ok) return []
+    const data = await res.json()
+    const docs = (data.response?.docs || []) as Array<{
+      identifier: string
+      title?: string
+      description?: string
+      mediatype?: string
+    }>
+
+    return docs.map((d) => {
+      const id = d.identifier
+      let kind: AssetKind = 'web'
+      if (d.mediatype === 'movies') kind = 'video'
+      else if (d.mediatype === 'audio') kind = 'audio'
+      else if (d.mediatype === 'texts') kind = 'doc'
+
+      const archiveUrl = `https://archive.org/details/${id}`
+      const thumb = `https://archive.org/services/img/${id}`
+
+      return {
+        assetId: assetId(archiveUrl, kind),
+        kind,
+        title: d.title || id,
+        url: archiveUrl,
+        thumbnail: thumb,
+        source: 'archive.org',
+        host: 'archive.org',
+        snippet: (d.description || `Public domain ${d.mediatype || 'media'} from Internet Archive`).slice(0, 180),
+        free: true,
+        license: 'Public Domain / Free Access',
+        directDownload: false,
+        meta: {
+          identifier: id,
+          mediatype: d.mediatype,
+        },
+      }
+    })
+  } catch {
+    return []
+  }
+}
+
+// Optional ZAI Web SDK search if available
+let zaiPromise: Promise<unknown> | null = null
+async function getZai() {
+  try {
+    const ZAI = (await import('z-ai-web-dev-sdk')).default
+    if (!zaiPromise) zaiPromise = ZAI.create()
+    return zaiPromise as Promise<{ functions: { invoke: (fn: string, args: Record<string, unknown>) => Promise<unknown> } }>
+  } catch {
+    return null
+  }
+}
+
+async function webSearchSdk(query: string, num: number): Promise<WebResult[]> {
+  try {
+    const zai = await getZai()
+    if (!zai) return []
+    const results = (await zai.functions.invoke('web_search', { query, num })) as WebResult[]
+    if (!Array.isArray(results)) return []
+    return results
+  } catch {
+    return []
+  }
 }
 
 function webResultToAsset(r: WebResult): Asset {
@@ -356,44 +441,36 @@ export async function GET(req: NextRequest) {
     )
   }
 
-  // Build the multi-query plan
-  const plans = buildQueries(q, type, free)
-
-  // Decide whether to include image-search as one of the parallel tasks.
-  // image-search has its own dedicated query (the first plan when label starts
-  // with "img"), and we only run it for the appropriate types/sources.
-  const includeImage = shouldUseImage(type, sources)
-  const imgPlan = includeImage
-    ? plans.find((p) => p.label.startsWith('img'))
-    : undefined
-  const webPlans = plans.filter((p) => !p.label.startsWith('img'))
-
-  // Each task is wrapped so a failure returns []. Run image-search in parallel
-  // with the web searches; the web searches themselves run SEQUENTIALLY to
-  // avoid hitting the upstream ZAI API rate limit (429) when several fire at
-  // once. Each individual web_search call already retries on 429.
   const tasks: Promise<Asset[]>[] = []
 
-  if (imgPlan) {
-    tasks.push(imageSearch(imgPlan.q, Math.min(20, imgPlan.num)).catch(() => []))
+  // 1. Z-AI CLI Image Search (if available)
+  if (type === 'all' || type === 'image') {
+    tasks.push(imageSearchCli(q, 20).catch(() => []))
+    tasks.push(searchOpenverse(q, 'images', 25).catch(() => []))
+    tasks.push(searchWikimediaCommons(q, 20).catch(() => []))
   }
 
-  // Chain the web plans serially with a small inter-call delay to keep us
-  // under the upstream ZAI web_search rate limit.
-  const webChain = (async () => {
-    const out: Asset[] = []
-    for (let i = 0; i < webPlans.length; i++) {
-      if (i > 0) await sleep(1200) // breathe between calls to avoid 429
-      try {
-        const rs = await webSearch(webPlans[i].q, webPlans[i].num)
-        out.push(...rs.map(webResultToAsset))
-      } catch {
-        // ignore — keep going
-      }
-    }
-    return out
-  })()
-  tasks.push(webChain)
+  // 2. Audio Searches
+  if (type === 'all' || type === 'audio') {
+    tasks.push(searchOpenverse(q, 'audio', 20).catch(() => []))
+  }
+
+  // 3. PDF / Doc Searches
+  if (type === 'all' || type === 'pdf' || type === 'doc') {
+    tasks.push(searchArxiv(q, 15).catch(() => []))
+  }
+
+  // 4. Video & Archive Searches
+  if (type === 'all' || type === 'video' || type === 'doc' || type === 'web') {
+    tasks.push(searchArchiveOrg(q, 20).catch(() => []))
+  }
+
+  // 5. Z-AI Web Search SDK
+  tasks.push(
+    webSearchSdk(q, 20)
+      .then((rs) => rs.map(webResultToAsset))
+      .catch(() => []),
+  )
 
   let merged: Asset[] = []
   try {
@@ -403,7 +480,7 @@ export async function GET(req: NextRequest) {
     merged = []
   }
 
-  // dedupe by assetId (keep first occurrence — image-search wins for images)
+  // Deduplicate by assetId
   const seen = new Set<string>()
   const deduped: Asset[] = []
   for (const a of merged) {
@@ -413,17 +490,17 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // NOTE: We intentionally do NOT filter by kind here for specific types. The
-  // multi-query plan above already targets the right kind (e.g. `site:youtube.com`
-  // for video, `filetype:pdf` for pdf, `site:pexels.com OR site:pixabay.com` for
-  // free video). Many free-stock video/audio hosts (Pexels, Pixabay, Mixkit,
-  // Bensound, Freesound…) are NOT in classifyKind's VIDEO_HOSTS / AUDIO_HOSTS
-  // sets, so they'd be labelled 'web' and wrongly dropped. The user can still
-  // narrow with the format filter rail in the UI.
   let results = deduped
 
-  // When free mode is on, prioritize free + direct-downloadable assets first,
-  // but still return everything (so the user can browse).
+  // If specific type is requested (not 'all'), filter to match or prioritize
+  if (type !== 'all') {
+    const matching = results.filter((r) => r.kind === type)
+    if (matching.length > 0) {
+      results = matching
+    }
+  }
+
+  // When free mode is on, prioritize free + direct-downloadable assets first
   if (free) {
     results = [...results].sort((a, b) => {
       const score = (x: Asset) =>
@@ -433,10 +510,9 @@ export async function GET(req: NextRequest) {
   }
 
   results = results.slice(0, limit)
-
   const ms = Date.now() - t0
 
-  // fire-and-forget persistence
+  // Fire-and-forget persistence
   void persistSearch(q, type, sources, results.length)
 
   return NextResponse.json({
